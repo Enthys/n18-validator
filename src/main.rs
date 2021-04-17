@@ -1,44 +1,43 @@
-extern crate nfd;
-extern crate serde;
 extern crate quick_xml;
+extern crate regex;
+extern crate serde;
 #[macro_use]
 extern crate serde_derive;
-extern crate regex;
 
-use dialog as PromptDialog;
-use dialog::DialogBox;
+use std::fs::File;
+use std::io::Write;
+
 use itertools::Itertools;
-use nfd::{Response as FileDialogResponse, DialogType, DialogBuilder};
+use native_dialog::{FileDialog, MessageDialog, MessageType};
 use rayon::prelude::*;
 use regex::Regex;
 
 use crate::xml::{Audit, audit_from_xml_file, audit_to_xml, generate_xml_header};
-use std::fs::File;
-use std::io::Write;
 
 mod xml;
 mod interceptor;
 
 fn main() {
-    let main_file = select_main_file().unwrap();
-    let interception_files = select_interception_files().unwrap();
+    let main_file = select_main_file();
+    let interception_files = select_interception_files();
 
     let mut main_audit = audit_from_xml_file(main_file.clone());
     let interception_audits = generate_audits_from_files(interception_files);
 
     let duplicated_document_numbers = get_duplicated_document_numbers(&main_audit, interception_audits);
 
-    let remove_duplication_choice = PromptDialog::Question::new(
-        format!(
+    let remove_duplication_choice = MessageDialog::new()
+        .set_type(MessageType::Info)
+        .set_title("Remove duplicate documents?")
+        .set_text(&format!(
             "There are ({:?}) document numbers should be removed: {}",
             duplicated_document_numbers.len(),
-            duplicated_document_numbers.chunks(6).map(|chunk| chunk.join(",")).join("\n"),
+            duplicated_document_numbers.chunks(7).map(|chunk| chunk.join(",")).join("\n"),
         ))
-        .title("Remove Duplicate documents")
-        .show()
-        .expect("Unable to show Dialog . . .");
+        .show_confirm()
+        .unwrap();
 
-    if remove_duplication_choice != dialog::Choice::Yes {
+    if remove_duplication_choice == false {
         return;
     }
 
@@ -52,46 +51,36 @@ fn main() {
     );
 
     let file_name_regex = Regex::new(r"(?P<file_name>[\w\d-]+\.xml$)").unwrap();
-    let main_file_name = file_name_regex.captures(main_file.as_str())
+    let main_file_name = format!("{}_clean.xml", file_name_regex.captures(main_file.as_str())
         .and_then(|capture| {
             capture.name("file_name").map(|file_name| file_name.as_str())
-        }).unwrap();
+        }).unwrap().replace(".xml", ""));
 
-    let file_save_location = select_save_location();
-    let mut file_handle = File::create(
-        format!(
-            "{}/{}_clean.xml",
-            file_save_location,
-            main_file_name.replace(".xml", "")
-        )
-    ).unwrap();
+    let file_save_location = select_save_location(main_file_name.clone());
+
+    let mut file_handle = File::create(file_save_location).unwrap();
     file_handle.write_all(audit_xml.as_bytes()).unwrap();
 }
 
-fn select_main_file() -> Result<String, ()> {
-    let filter = Some("xml");
-    let result = nfd::open_file_dialog(filter, None).unwrap_or_else(|e| {
-        panic!("{}", e)
-    });
-
-    match result {
-        FileDialogResponse::Okay(file_path) => Ok(file_path),
-        FileDialogResponse::OkayMultiple(_) => Err(()),
-        FileDialogResponse::Cancel => Err(())
-    }
+fn select_main_file() -> String {
+    String::from(FileDialog::new()
+        .add_filter("XML File", &["xml"])
+        .show_open_single_file()
+        .unwrap()
+        .unwrap()
+        .to_str()
+        .unwrap()
+    )
 }
 
-fn select_interception_files() -> Result<Vec<String>, ()> {
-    let filter = Some("xml");
-    let result = nfd::open_file_multiple_dialog(filter, None).unwrap_or_else(|e| {
-        panic!("{}", e)
-    });
-
-    match result {
-        FileDialogResponse::Okay(file) => Ok(vec![file]),
-        FileDialogResponse::OkayMultiple(files) => Ok(files),
-        FileDialogResponse::Cancel => Err(())
-    }
+fn select_interception_files() -> Vec<String> {
+    FileDialog::new()
+        .add_filter("XML File", &["xml"])
+        .show_open_multiple_file()
+        .unwrap()
+        .iter()
+        .map(|path_buf| String::from(path_buf.to_str().unwrap()))
+        .collect_vec()
 }
 
 fn generate_audits_from_files(files: Vec<String>) -> Vec<Audit> {
@@ -106,14 +95,13 @@ fn get_duplicated_document_numbers(main_audit: &Audit, interception_audits: Vec<
     result.into_iter().unique().collect()
 }
 
-fn select_save_location() -> String {
-    let response = DialogBuilder::new(DialogType::PickFolder)
-        .default_path(".")
-        .open()
-        .unwrap();
-
-    match response {
-        FileDialogResponse::Okay(location) => location,
-        _ => return String::from("")
-    }
+fn select_save_location(default_file_name: String) -> String {
+    String::from(FileDialog::new()
+        .set_filename(default_file_name.as_str())
+        .show_save_single_file()
+        .unwrap()
+        .unwrap()
+        .to_str()
+        .unwrap()
+    )
 }
